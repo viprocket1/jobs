@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.json
+*.csv
+*.md
+!README.md
+.DS_Store

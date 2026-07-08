@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SimplyHired Job Scraper</title>
+<style>
+  :root {
+    --bg:#0d1117; --surface:#161b22; --border:#30363d; --text:#e6edf3;
+    --muted:#8b949e; --accent:#58a6ff; --green:#3fb950; --yellow:#d29922; --red:#f85149;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; min-height:100vh; }
+  header { background:var(--surface); border-bottom:1px solid var(--border); padding:14px 24px; display:flex; align-items:center; gap:14px; }
+  header h1 { font-size:17px; font-weight:600; color:var(--accent); }
+  .header-right { margin-left:auto; display:flex; align-items:center; gap:8px; }
+  .status-dot { width:8px; height:8px; border-radius:50%; background:var(--muted); }
+  .status-dot.ok { background:var(--green); box-shadow:0 0 6px var(--green); }
+  .status-dot.err { background:var(--red); }
+  #server-status { font-size:12px; color:var(--muted); }
+  .form { padding:18px 24px; border-bottom:1px solid var(--border); background:var(--surface); display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  input, select { background:var(--bg); border:1px solid var(--border); color:var(--text); padding:9px 12px; border-radius:6px; font-size:14px; outline:none; }
+  input:focus, select:focus { border-color:var(--accent); }
+  #q-input { flex:1; min-width:200px; }
+  #loc-input { width:160px; }
+  .btn { background:var(--accent); border:none; color:#fff; padding:9px 20px; border-radius:6px; font-size:14px; font-weight:500; cursor:pointer; }
+  .btn:hover { opacity:.9; }
+  .stats-bar { display:flex; border-bottom:1px solid var(--border); }
+  .stat { padding:10px 20px; border-right:1px solid var(--border); }
+  .stat-label { font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); }
+  .stat-value { font-size:18px; font-weight:600; }
+  .stat-value.accent { color:var(--accent); }
+  .stat-value.green { color:var(--green); }
+  .results { padding:20px 24px; max-width:1100px; margin:0 auto; }
+  .job-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:16px; margin-bottom:12px; }
+  .job-card:hover { border-color:var(--muted); }
+  .job-top { display:flex; justify-content:space-between; gap:12px; margin-bottom:6px; }
+  .job-title { font-size:15px; font-weight:600; color:var(--accent); }
+  .job-company { font-size:13px; margin-top:2px; }
+  .job-salary { font-size:13px; color:var(--green); font-weight:500; white-space:nowrap; }
+  .job-meta { display:flex; gap:14px; font-size:12px; color:var(--muted); margin-bottom:6px; flex-wrap:wrap; }
+  .badge { background:rgba(88,166,255,.15); color:var(--accent); font-size:11px; padding:2px 7px; border-radius:12px; }
+  .badge.sponsored { background:rgba(210,153,34,.15); color:var(--yellow); }
+  .job-snippet { font-size:13px; color:var(--muted); line-height:1.5; margin:6px 0; }
+  .job-url { font-size:12px; color:var(--muted); text-decoration:none; }
+  .job-url:hover { color:var(--accent); text-decoration:underline; }
+  .empty { text-align:center; padding:60px 20px; color:var(--muted); font-size:14px; }
+  .empty-icon { font-size:40px; margin-bottom:12px; opacity:.4; }
+  .loading { display:none; align-items:center; gap:10px; color:var(--muted); padding:12px 0; }
+  .loading.visible { display:flex; }
+  .spinner { width:16px; height:16px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .6s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .error-state { background:rgba(248,81,73,.1); border:1px solid var(--red); border-radius:8px; padding:14px; color:var(--red); font-size:13px; margin-top:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>SimplyHired Job Scraper</h1>
+  <div class="header-right">
+    <div class="status-dot" id="status-dot"></div>
+    <span id="server-status">Checking...</span>
+  </div>
+</header>
+
+<div class="form">
+  <input type="text" id="q-input" placeholder="Job title or keyword, e.g. python developer" value="python developer">
+  <input type="text" id="loc-input" placeholder="Location" value="remote">
+  <select id="pages-select">
+    <option value="1">1 page</option>
+    <option value="2">2 pages</option>
+    <option value="3" selected>3 pages</option>
+    <option value="5">5 pages</option>
+  </select>
+  <button class="btn" id="search-btn" onclick="doSearch()">Search</button>
+</div>
+
+<div class="stats-bar">
+  <div class="stat"><div class="stat-label">Available</div><div class="stat-value accent" id="stat-total">&mdash;</div></div>
+  <div class="stat"><div class="stat-label">Returned</div><div class="stat-value" id="stat-returned">&mdash;</div></div>
+  <div class="stat"><div class="stat-label">Cached</div><div class="stat-value green" id="stat-cached">&mdash;</div></div>
+  <div class="stat"><div class="stat-label">Last Fetch</div><div class="stat-value" id="stat-time">&mdash;</div></div>
+</div>
+
+<div class="results" id="results">
+  <div class="empty" id="empty-state"><div class="empty-icon">&#128269;</div>Search for jobs using the form above</div>
+  <div class="loading" id="loading"><div class="spinner"></div><span>Fetching jobs (may take 10-20s)...</span></div>
+</div>
+
+<script>
+const API = '';  // same origin
+
+async function checkHealth() {
+  const dot = document.getElementById('status-dot');
+  const status = document.getElementById('server-status');
+  try {
+    const r = await fetch(API + '/health');
+    dot.className = 'status-dot ' + (r.ok ? 'ok' : 'err');
+    status.textContent = r.ok ? 'Server OK' : 'Server error';
+  } catch {
+    dot.className = 'status-dot err';
+    status.textContent = 'Server offline';
+  }
+}
+
+async function doSearch() {
+  const q = document.getElementById('q-input').value.trim();
+  const loc = document.getElementById('loc-input').value.trim();
+  const pages = document.getElementById('pages-select').value;
+  if (!q && !loc) return;
+
+  const results = document.getElementById('results');
+  results.innerHTML = '<div class="loading visible"><div class="spinner"></div><span>Fetching jobs (may take 10-20s)...</span></div>';
+
+  const start = Date.now();
+  try {
+    const r = await fetch(`${API}/jobs?q=${encodeURIComponent(q)}&loc=${encodeURIComponent(loc)}&pages=${pages}`);
+    const json = await r.json();
+    if (json.error) { showError(json.error); return; }
+    render(json);
+    updateStats(json);
+  } catch (err) {
+    showError(err.message);
+  }
+}
+
+function render(data) {
+  const area = document.getElementById('results');
+  if (!data.jobs || !data.jobs.length) {
+    area.innerHTML = '<div class="empty"><div class="empty-icon">&#128269;</div>No jobs found. Try different keywords.</div>';
+    return;
+  }
+  let html = '';
+  for (const j of data.jobs) {
+    const remote = j.remote ? `<span class="badge">${esc(j.remote)}</span>` : '';
+    const sponsored = j.sponsored ? '<span class="badge sponsored">Sponsored</span>' : '';
+    const rating = j.rating ? `<span>&#9733; ${esc(j.rating)}</span>` : '';
+    html += `<div class="job-card">
+      <div class="job-top">
+        <div>
+          <div class="job-title">${esc(j.title)}</div>
+          <div class="job-company">${esc(j.company)}</div>
+        </div>
+        <div class="job-salary">${esc(j.salary)}</div>
+      </div>
+      <div class="job-meta">
+        <span>&#128205; ${esc(j.location)}</span>
+        ${j.job_types ? `<span>&#128188; ${esc(j.job_types)}</span>` : ''}
+        ${j.date_posted ? `<span>&#128197; ${esc(j.date_posted)}</span>` : ''}
+        ${rating}
+        ${remote}
+        ${sponsored}
+      </div>
+      ${j.snippet ? `<div class="job-snippet">${esc(j.snippet)}</div>` : ''}
+      <a class="job-url" href="${esc(j.url)}" target="_blank">View job &rarr;</a>
+    </div>`;
+  }
+  area.innerHTML = html;
+}
+
+function updateStats(d) {
+  document.getElementById('stat-total').textContent = d.total || d.count || '0';
+  document.getElementById('stat-returned').textContent = d.count ?? d.jobs.length;
+  document.getElementById('stat-cached').textContent = d.cached ? 'Yes' : 'No';
+  document.getElementById('stat-time').textContent = new Date().toLocaleTimeString();
+}
+
+function showError(msg) {
+  document.getElementById('results').innerHTML = '<div class="error-state">Error: ' + esc(msg) + '</div>';
+}
+
+function esc(s) {
+  if (s === null || s === undefined) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+document.getElementById('q-input').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+document.getElementById('loc-input').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+checkHealth();
+setInterval(checkHealth, 30000);
+</script>
+</body>
+</html>
