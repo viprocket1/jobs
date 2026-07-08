@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SimplyHired Job Scraper</title>
+<title>SimplyHired Jobs Dashboard</title>
 <style>
   :root {
     --bg:#0d1117; --surface:#161b22; --border:#30363d; --text:#e6edf3;
@@ -25,12 +25,15 @@
   #loc-input { width:160px; }
   .btn { background:var(--accent); border:none; color:#fff; padding:9px 20px; border-radius:6px; font-size:14px; font-weight:500; cursor:pointer; }
   .btn:hover { opacity:.9; }
+  .btn.secondary { background:var(--surface); border:1px solid var(--border); color:var(--text); }
+  .btn:disabled { opacity:.5; cursor:not-allowed; }
   .stats-bar { display:flex; border-bottom:1px solid var(--border); }
   .stat { padding:10px 20px; border-right:1px solid var(--border); }
   .stat-label { font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); }
   .stat-value { font-size:18px; font-weight:600; }
   .stat-value.accent { color:var(--accent); }
   .stat-value.green { color:var(--green); }
+  .stat-value.dim { color:var(--muted); font-size:13px; font-weight:400; }
   .results { padding:20px 24px; max-width:1100px; margin:0 auto; }
   .job-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:16px; margin-bottom:12px; }
   .job-card:hover { border-color:var(--muted); }
@@ -41,6 +44,7 @@
   .job-meta { display:flex; gap:14px; font-size:12px; color:var(--muted); margin-bottom:6px; flex-wrap:wrap; }
   .badge { background:rgba(88,166,255,.15); color:var(--accent); font-size:11px; padding:2px 7px; border-radius:12px; }
   .badge.sponsored { background:rgba(210,153,34,.15); color:var(--yellow); }
+  .badge.source { background:rgba(63,185,80,.15); color:var(--green); }
   .job-snippet { font-size:13px; color:var(--muted); line-height:1.5; margin:6px 0; }
   .job-url { font-size:12px; color:var(--muted); text-decoration:none; }
   .job-url:hover { color:var(--accent); text-decoration:underline; }
@@ -51,11 +55,13 @@
   .spinner { width:16px; height:16px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .6s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg); } }
   .error-state { background:rgba(248,81,73,.1); border:1px solid var(--red); border-radius:8px; padding:14px; color:var(--red); font-size:13px; margin-top:12px; }
+  .info-banner { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:10px 14px; font-size:12px; color:var(--muted); margin-bottom:14px; display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  .info-banner b { color:var(--text); font-weight:500; }
 </style>
 </head>
 <body>
 <header>
-  <h1>SimplyHired Job Scraper</h1>
+  <h1>SimplyHired Jobs</h1>
   <div class="header-right">
     <div class="status-dot" id="status-dot"></div>
     <span id="server-status">Checking...</span>
@@ -63,31 +69,25 @@
 </header>
 
 <div class="form">
-  <input type="text" id="q-input" placeholder="Job title or keyword, e.g. python developer" value="python developer">
-  <input type="text" id="loc-input" placeholder="Location" value="remote">
-  <select id="pages-select">
-    <option value="1">1 page</option>
-    <option value="2">2 pages</option>
-    <option value="3" selected>3 pages</option>
-    <option value="5">5 pages</option>
-  </select>
-  <button class="btn" id="search-btn" onclick="doSearch()">Search</button>
+  <input type="text" id="q-input" placeholder="Filter by keyword (title, company, snippet)">
+  <input type="text" id="loc-input" placeholder="Filter by location">
+  <button class="btn" onclick="loadJobs()">Filter</button>
+  <button class="btn secondary" id="refresh-btn" onclick="triggerScrape()">Refresh from Termux</button>
 </div>
 
 <div class="stats-bar">
-  <div class="stat"><div class="stat-label">Available</div><div class="stat-value accent" id="stat-total">&mdash;</div></div>
-  <div class="stat"><div class="stat-label">Returned</div><div class="stat-value" id="stat-returned">&mdash;</div></div>
-  <div class="stat"><div class="stat-label">Cached</div><div class="stat-value green" id="stat-cached">&mdash;</div></div>
-  <div class="stat"><div class="stat-label">Last Fetch</div><div class="stat-value" id="stat-time">&mdash;</div></div>
+  <div class="stat"><div class="stat-label">Total Jobs</div><div class="stat-value accent" id="stat-total">&mdash;</div></div>
+  <div class="stat"><div class="stat-label">Showing</div><div class="stat-value" id="stat-returned">&mdash;</div></div>
+  <div class="stat"><div class="stat-label">Last Scrape</div><div class="stat-value dim" id="stat-time">&mdash;</div></div>
+  <div class="stat"><div class="stat-label">Source</div><div class="stat-value dim" id="stat-host">&mdash;</div></div>
 </div>
 
 <div class="results" id="results">
-  <div class="empty" id="empty-state"><div class="empty-icon">&#128269;</div>Search for jobs using the form above</div>
-  <div class="loading" id="loading"><div class="spinner"></div><span>Fetching jobs (may take 10-20s)...</span></div>
+  <div class="empty" id="empty-state"><div class="empty-icon">&#128269;</div>Loading...</div>
 </div>
 
 <script>
-const API = '';  // same origin
+const API = '';
 
 async function checkHealth() {
   const dot = document.getElementById('status-dot');
@@ -102,66 +102,108 @@ async function checkHealth() {
   }
 }
 
-async function doSearch() {
+async function loadMeta() {
+  try {
+    const r = await fetch(API + '/meta');
+    const m = await r.json();
+    document.getElementById('stat-host').textContent = m.host || 'Termux';
+    if (m.last_scrape) {
+      const d = new Date(m.last_scrape);
+      document.getElementById('stat-time').textContent = d.toLocaleString();
+    }
+  } catch (e) {}
+}
+
+async function loadJobs() {
   const q = document.getElementById('q-input').value.trim();
   const loc = document.getElementById('loc-input').value.trim();
-  const pages = document.getElementById('pages-select').value;
-  if (!q && !loc) return;
+  const params = new URLSearchParams();
+  if (q) params.set('q', q);
+  if (loc) params.set('loc', loc);
+  params.set('limit', '100');
 
-  const results = document.getElementById('results');
-  results.innerHTML = '<div class="loading visible"><div class="spinner"></div><span>Fetching jobs (may take 10-20s)...</span></div>';
+  const area = document.getElementById('results');
+  area.innerHTML = '<div class="loading visible"><div class="spinner"></div><span>Loading jobs...</span></div>';
 
-  const start = Date.now();
   try {
-    const r = await fetch(`${API}/jobs?q=${encodeURIComponent(q)}&loc=${encodeURIComponent(loc)}&pages=${pages}`);
-    const json = await r.json();
-    if (json.error) { showError(json.error); return; }
-    render(json);
-    updateStats(json);
+    const r = await fetch(API + '/jobs?' + params.toString());
+    const data = await r.json();
+    render(data);
+    document.getElementById('stat-total').textContent = data.total;
+    document.getElementById('stat-returned').textContent = data.count;
+    loadMeta();
   } catch (err) {
     showError(err.message);
+  }
+}
+
+async function triggerScrape() {
+  const btn = document.getElementById('refresh-btn');
+  btn.disabled = true;
+  const area = document.getElementById('results');
+  const q = document.getElementById('q-input').value.trim();
+  const loc = document.getElementById('loc-input').value.trim() || 'remote';
+  const pages = document.getElementById('pages-select').value;
+  area.innerHTML = '<div class="loading visible"><div class="spinner"></div><span>Scraping <b>' + esc(q || 'all') + '</b> in <b>' + esc(loc) + '</b> via Termux...</span></div>';
+  btn.textContent = 'Scraping...';
+
+  try {
+    const r = await fetch(API + '/scrape', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({q: q, loc: loc, pages: parseInt(pages)}),
+    });
+    const data = await r.json();
+    if (!data.ok) {
+      showError(data.error || 'Scrape failed');
+      return;
+    }
+    await loadJobs();
+    btn.textContent = 'Done - scrape again';
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => { btn.textContent = 'Refresh from Termux'; }, 3000);
   }
 }
 
 function render(data) {
   const area = document.getElementById('results');
   if (!data.jobs || !data.jobs.length) {
-    area.innerHTML = '<div class="empty"><div class="empty-icon">&#128269;</div>No jobs found. Try different keywords.</div>';
+    area.innerHTML = '<div class="empty"><div class="empty-icon">&#128269;</div>No jobs match your filter. Try clearing the inputs.</div>';
     return;
   }
-  let html = '';
+  const banner = data.last_scrape ?
+    '<div class="info-banner">' +
+    '<b>' + data.total + '</b> jobs in dataset · ' +
+    'last scraped <b>' + new Date(data.last_scrape).toLocaleString() + '</b>' +
+    '</div>' : '';
+  let html = banner;
   for (const j of data.jobs) {
-    const remote = j.remote ? `<span class="badge">${esc(j.remote)}</span>` : '';
+    const remote = j.remote ? '<span class="badge">' + esc(j.remote) + '</span>' : '';
     const sponsored = j.sponsored ? '<span class="badge sponsored">Sponsored</span>' : '';
-    const rating = j.rating ? `<span>&#9733; ${esc(j.rating)}</span>` : '';
-    html += `<div class="job-card">
-      <div class="job-top">
-        <div>
-          <div class="job-title">${esc(j.title)}</div>
-          <div class="job-company">${esc(j.company)}</div>
-        </div>
-        <div class="job-salary">${esc(j.salary)}</div>
-      </div>
-      <div class="job-meta">
-        <span>&#128205; ${esc(j.location)}</span>
-        ${j.job_types ? `<span>&#128188; ${esc(j.job_types)}</span>` : ''}
-        ${j.date_posted ? `<span>&#128197; ${esc(j.date_posted)}</span>` : ''}
-        ${rating}
-        ${remote}
-        ${sponsored}
-      </div>
-      ${j.snippet ? `<div class="job-snippet">${esc(j.snippet)}</div>` : ''}
-      <a class="job-url" href="${esc(j.url)}" target="_blank">View job &rarr;</a>
-    </div>`;
+    const rating = j.rating ? '<span>&#9733; ' + esc(j.rating) + '</span>' : '';
+    const srcTag = j.src_query ? '<span class="badge source">' + esc(j.src_query) + '</span>' : '';
+    html += '<div class="job-card">' +
+      '<div class="job-top">' +
+        '<div>' +
+          '<div class="job-title">' + esc(j.title) + '</div>' +
+          '<div class="job-company">' + esc(j.company) + '</div>' +
+        '</div>' +
+        '<div class="job-salary">' + esc(j.salary) + '</div>' +
+      '</div>' +
+      '<div class="job-meta">' +
+        '<span>&#128205; ' + esc(j.location) + '</span>' +
+        (j.job_types ? '<span>&#128188; ' + esc(j.job_types) + '</span>' : '') +
+        (j.date_posted ? '<span>&#128197; ' + esc(j.date_posted) + '</span>' : '') +
+        rating + remote + sponsored + srcTag +
+      '</div>' +
+      (j.snippet ? '<div class="job-snippet">' + esc(j.snippet) + '</div>' : '') +
+      '<a class="job-url" href="' + esc(j.url) + '" target="_blank">View job &rarr;</a>' +
+    '</div>';
   }
   area.innerHTML = html;
-}
-
-function updateStats(d) {
-  document.getElementById('stat-total').textContent = d.total || d.count || '0';
-  document.getElementById('stat-returned').textContent = d.count ?? d.jobs.length;
-  document.getElementById('stat-cached').textContent = d.cached ? 'Yes' : 'No';
-  document.getElementById('stat-time').textContent = new Date().toLocaleTimeString();
 }
 
 function showError(msg) {
@@ -173,9 +215,10 @@ function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-document.getElementById('q-input').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
-document.getElementById('loc-input').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+document.getElementById('q-input').addEventListener('keydown', e => { if (e.key === 'Enter') loadJobs(); });
+document.getElementById('loc-input').addEventListener('keydown', e => { if (e.key === 'Enter') loadJobs(); });
 checkHealth();
+loadJobs();
 setInterval(checkHealth, 30000);
 </script>
 </body>
