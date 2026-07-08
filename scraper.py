@@ -14,11 +14,14 @@ import json
 import time
 import csv
 import ast
+import os
+import random
 import argparse
 from datetime import datetime
 from urllib.parse import urlencode, unquote
 
 import cloudscraper
+import requests
 
 BASE_URL = "https://www.simplyhired.com/search"
 SITE = "https://www.simplyhired.com"
@@ -26,6 +29,113 @@ TIMEOUT = 25
 REQUEST_DELAY = 2.0
 
 session = cloudscraper.create_scraper()
+
+
+# ── Free proxy list (used when no PROXY_LIST env var is set) ────────────────
+
+FREE_PROXY_SOURCES = [
+    "https://sslproxies.org/",
+    "https://free-proxy-list.net/",
+    "https://www.us-proxy.org/",
+]
+
+
+def fetch_free_proxies() -> list[str]:
+    """Scrape a handful of public proxy lists, validate by pinging a fast host,
+    shuffle the survivors. Returns ['ip:port', ...]."""
+    found: list[str] = []
+    rx = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}:\d{2,5}")
+    for url in FREE_PROXY_SOURCES:
+        try:
+            r = requests.get(
+                url,
+                timeout=15,
+                headers={"User-Agent": "Mozilla/5.0 Chrome/126.0.0.0"},
+            )
+            found += rx.findall(r.text)
+        except Exception:
+            pass
+    uniq = list(dict.fromkeys(found))
+    random.shuffle(uniq)
+    # Validate: which ones can actually make a connection? Cheap HTTP probe.
+    valid: list[str] = []
+    test = cloudscraper.create_scraper()
+    for p in uniq[:60]:  # cap probes so startup isn't slow
+        try:
+            r = test.get(
+                "https://www.simplyhired.com/",
+                proxies={"http": f"http://{p}", "https": f"http://{p}"},
+                timeout=4,
+            )
+            if r.status_code in (200, 301, 302, 403):  # 403 = reached CF, valid path
+                valid.append(p)
+                if len(valid) >= 25:
+                    break
+        except Exception:
+            pass
+    random.shuffle(valid)
+    return valid
+
+
+def _load_proxies() -> list[str]:
+    raw = os.environ.get("PROXY_LIST", "").strip()
+    if raw:
+        # Comma- or newline-separated env var, takes precedence (predictable, paid proxies).
+        parts = re.split(r"[,\s]+", raw)
+        return [p for p in parts if p]
+    # No env var → use free public proxies.
+    return fetch_free_proxies()
+
+
+# ── Session that rotates through proxies on failure ──────────────────────────
+
+class ProxySession:
+    """cloudscraper + rotating proxies. Falls back to direct if list exhausted."""
+
+    def __init__(self):
+        self.base = cloudscraper.create_scraper()
+        self.proxies: list[str] = []
+        self.idx = 0
+        self.rotated = 0
+
+    def _ensure_proxies(self):
+        if not self.proxies:
+            self.proxies = _load_proxies()
+            self.idx = 0
+            print(f"  [proxy] loaded {len(self.proxies)} candidates")
+
+    def get(self, url: str, timeout: int = TIMEOUT, max_tries: int = 6):
+        last = None
+        tried = 0
+        # First attempt: direct (works on residential IPs / local dev).
+        try:
+            r = self.base.get(url, timeout=timeout)
+            if r.status_code == 200:
+                return r
+            last = f"direct: status {r.status_code}"
+        except Exception as e:
+            last = f"direct: {type(e).__name__}: {str(e)[:60]}"
+        # Direct failed (likely 403 from datacenter IP) — rotate through proxies.
+        self._ensure_proxies()
+        while tried < max_tries and self.proxies:
+            proxy = self.proxies[self.idx % len(self.proxies)]
+            self.idx += 1
+            self.rotated += 1
+            pu = f"http://{proxy}"
+            try:
+                r = self.base.get(
+                    url, proxies={"http": pu, "https": pu}, timeout=timeout
+                )
+                if r.status_code == 200:
+                    return r
+                last = f"{proxy}: status {r.status_code}"
+            except Exception as e:
+                last = f"{proxy}: {type(e).__name__}: {str(e)[:60]}"
+            tried += 1
+        raise RuntimeError(f"ProxySession: failed after {tried+1} attempts ({last})")
+
+
+http = ProxySession()
 
 
 # ── URL builder (cursor-based pagination) ────────────────────────────────────
@@ -95,8 +205,7 @@ def extract(resp_text: str):
 
 
 def scrape_page(url: str):
-    resp = session.get(url, timeout=TIMEOUT)
-    resp.raise_for_status()
+    resp = http.get(url)
     return extract(resp.text)
 
 

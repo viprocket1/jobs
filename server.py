@@ -19,7 +19,7 @@ from pathlib import Path
 
 from flask import Flask, request, jsonify, send_from_directory
 
-from scraper import scrape_jobs
+from scraper import scrape_jobs, http as proxy_session
 
 app = Flask(__name__)
 
@@ -46,10 +46,13 @@ def health():
 def info():
     return jsonify({
         "service": "SimplyHired Jobs API",
-        "version": "1.0",
-        "endpoints": ["/", "/health", "/jobs?q=&loc=&pages="],
+        "version": "1.1",
+        "endpoints": ["/", "/health", "/info", "/jobs?q=&loc=&pages="],
         "cache_ttl_seconds": CACHE_TTL,
         "max_pages": MAX_PAGES,
+        "proxy_mode": "free" if not os.environ.get("PROXY_LIST") else "custom",
+        "proxy_candidates": len(proxy_session.proxies),
+        "proxies_used": proxy_session.rotated,
     })
 
 
