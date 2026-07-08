@@ -35,7 +35,8 @@ if [ "$TUNNEL" = "ngrok" ]; then
   URL=$(grep -oE 'https://[a-z0-9-]+\.ngrok[^ ]*' /tmp/ngrok.log | head -1)
 else
   echo "==> starting cloudflared quick tunnel"
-  cloudflared tunnel --url "http://localhost:$PORT" --logfile /tmp/cf.log 2>/dev/null &
+  # --edge-ip-version 4 avoids the IPv6 path that fails on some mobile networks
+  cloudflared tunnel --url "http://localhost:$PORT" --edge-ip-version 4 --no-autoupdate 2>/tmp/cf.log &
   TUNNEL_PID=$!
   for i in 1 2 3 4 5 6 7 8 9 10; do
     sleep 2
